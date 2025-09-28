@@ -1,4 +1,3 @@
-// Google OAuth Service
 export interface GoogleUser {
   id: string;
   email: string;
@@ -28,7 +27,10 @@ declare global {
     google: {
       accounts: {
         id: {
-          initialize: (config: { client_id: string; callback: (response: GoogleAuthResponse) => void }) => void;
+          initialize: (config: {
+            client_id: string;
+            callback: (response: GoogleAuthResponse) => void;
+          }) => void;
           renderButton: (element: HTMLElement | null, config: any) => void;
         };
       };
@@ -77,72 +79,125 @@ export class GoogleAuthService {
     });
   }
 
-  private handleCredentialResponse(response: GoogleAuthResponse): void {
-    // Decode the JWT token to get user info
-    const userInfo = this.decodeJWT(response.credential);
-    console.log('Google Auth Response:', userInfo);
-    
-    // Store user info in localStorage
-    localStorage.setItem('googleUser', JSON.stringify(userInfo));
-    localStorage.setItem('googleToken', response.credential);
-    
-    // Dispatch custom event for components to listen
-    window.dispatchEvent(new CustomEvent('googleAuthSuccess', { 
-      detail: { user: userInfo, token: response.credential } 
-    }));
+  private async handleCredentialResponse(
+    response: GoogleAuthResponse,
+  ): Promise<void> {
+    try {
+      // 1. Decodificar JWT de Google (como ya lo haces)
+      const userInfo = this.decodeJWT(response.credential);
+      console.log("🔑 Google JWT decodificado:", userInfo);
+
+      // 2. ¡NUEVO! Enviar token al backend
+      const backendResponse = await this.sendTokenToBackend(
+        response.credential,
+      );
+
+      // 3. Guardar información
+      localStorage.setItem("googleUser", JSON.stringify(userInfo));
+      localStorage.setItem("googleToken", response.credential);
+      localStorage.setItem("appToken", backendResponse.access_token); // Tu JWT propio
+
+      // 4. Notificar a componentes
+      window.dispatchEvent(
+        new CustomEvent("googleAuthSuccess", {
+          detail: {
+            user: userInfo,
+            token: response.credential,
+            backendResponse: backendResponse,
+          },
+        }),
+      );
+    } catch (error) {
+      console.error("❌ Error en proceso de autenticación:", error);
+      // Manejar error - quizás mostrar mensaje al usuario
+    }
   }
 
   private decodeJWT(token: string): GoogleUser {
     try {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const base64Url = token.split(".")[1];
+      const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
       const jsonPayload = decodeURIComponent(
         atob(base64)
-          .split('')
-          .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join('')
+          .split("")
+          .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+          .join(""),
       );
       return JSON.parse(jsonPayload);
     } catch (error) {
-      console.error('Error decoding JWT:', error);
-      throw new Error('Failed to decode JWT token');
+      console.error("Error decoding JWT:", error);
+      throw new Error("Failed to decode JWT token");
     }
   }
 
   renderButton(elementId: string): void {
     if (!this.isInitialized) {
-      console.error('Google Auth not initialized');
+      console.error("Google Auth not initialized");
       return;
     }
 
-    window.google.accounts.id.renderButton(
-      document.getElementById(elementId),
-      {
-        theme: 'outline',
-        size: 'large',
-        type: 'standard',
-        shape: 'rectangular',
-        text: 'signin_with',
-        logo_alignment: 'left',
-      }
-    );
+    window.google.accounts.id.renderButton(document.getElementById(elementId), {
+      theme: "outline",
+      size: "large",
+      type: "standard",
+      shape: "rectangular",
+      text: "signin_with",
+      logo_alignment: "left",
+    });
   }
 
   signOut(): void {
-    localStorage.removeItem('googleUser');
-    localStorage.removeItem('googleToken');
-    window.dispatchEvent(new CustomEvent('googleAuthSignOut'));
+    localStorage.removeItem("googleUser");
+    localStorage.removeItem("googleToken");
+    window.dispatchEvent(new CustomEvent("googleAuthSignOut"));
   }
 
   getCurrentUser(): GoogleUser | null {
-    const userStr = localStorage.getItem('googleUser');
+    const userStr = localStorage.getItem("googleUser");
     return userStr ? JSON.parse(userStr) : null;
   }
 
   isSignedIn(): boolean {
     return this.getCurrentUser() !== null;
   }
+
+  async sendTokenToBackend(token: string): Promise<any> {
+    try {
+      console.log("🚀 Enviando token al backend FastAPI...");
+
+      const response = await fetch("http://localhost:8000/auth/google", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          token: token,
+        }),
+      });
+
+      console.log("📡 Respuesta del backend:", response.status);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("❌ Error del backend:", errorData);
+        throw new Error(errorData.detail || "Error del servidor");
+      }
+
+      const data = await response.json();
+      console.log("✅ Login exitoso en backend:", data);
+
+      // Guardar el token JWT propio (no el de Google)
+      localStorage.setItem("appToken", data.access_token);
+
+      return data;
+    } catch (error) {
+      console.error("💥 Error enviando token al backend:", error);
+      throw error;
+    }
+  }
 }
 
 // Export singleton instance
-export const googleAuth = new GoogleAuthService('224887003309-8eoo3t7q2dei8hs52fn13r7t2sesge42.apps.googleusercontent.com');
+export const googleAuth = new GoogleAuthService(
+  "1065699173764-rne2gf7jkhld882fl3ag1248cdhf3sck.apps.googleusercontent.com",
+);
