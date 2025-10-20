@@ -1,203 +1,247 @@
 export interface GoogleUser {
-  id: string;
+  usuario_id: number | null;
+  google_id: string;
   email: string;
+  nombre_completo: string;
+  rol: string;
+  is_teacher: boolean;
+  is_student: boolean;
+  fecha_creacion: string;
+  rol_determinado: string | null;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  user_profile: GoogleUser;
+  is_new_user: boolean;
+  message: string;
+}
+
+export interface GoogleClassroom {
+  id: string;
   name: string;
-  picture: string;
-  given_name: string;
-  family_name: string;
-  // Campos adicionales del JWT
-  aud: string;
-  iss: string;
-  exp: number;
-  iat: number;
-  sub: string;
-  email_verified: boolean;
-  locale?: string;
-  hd?: string;
-  [key: string]: any; // Para campos adicionales
-}
-
-export interface GoogleAuthResponse {
-  credential: string;
-  select_by: string;
-}
-
-declare global {
-  interface Window {
-    google: {
-      accounts: {
-        id: {
-          initialize: (config: {
-            client_id: string;
-            callback: (response: GoogleAuthResponse) => void;
-          }) => void;
-          renderButton: (element: HTMLElement | null, config: any) => void;
-        };
-      };
-    };
-  }
+  section: string | null;
+  description: string | null;
+  room: string | null;
+  enrollment_code: string | null;
 }
 
 export class GoogleAuthService {
   private clientId: string;
-  private isInitialized: boolean = false;
+  private redirectUri: string;
+  private baseUrl: string;
 
-  constructor(clientId: string) {
+  constructor(
+    clientId: string,
+    redirectUri: string,
+    baseUrl: string = "http://localhost:8000",
+  ) {
     this.clientId = clientId;
+    this.redirectUri = redirectUri;
+    this.baseUrl = baseUrl;
   }
 
-  async initialize(): Promise<void> {
-    return new Promise((resolve) => {
-      if (this.isInitialized) {
-        resolve();
-        return;
+  async signIn(): Promise<void> {
+    try {
+      const response = await fetch(`${this.baseUrl}/auth/google/login`);
+      const data = await response.json();
+      window.location.href = data.url;
+    } catch (error) {
+      console.error("Error obteniendo URL de login:", error);
+      throw error;
+    }
+  }
+
+  // 🆕 MÉTODO ACTUALIZADO - Ahora captura también el google_token
+  handleCallbackToken(): string | null {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get("token");
+    const googleToken = urlParams.get("google_token");
+    const error = urlParams.get("error");
+
+    if (error) {
+      const message = urlParams.get("message");
+      console.error("Error de autenticación:", error, message);
+      throw new Error(`Error de autenticación: ${message || error}`);
+    }
+
+    if (token) {
+      console.log("✅ Token de app guardado");
+      localStorage.setItem("appToken", token);
+
+      // 🆕 Guardar también el google_token si existe
+      if (googleToken) {
+        console.log("✅ Token de Google guardado");
+        localStorage.setItem("googleToken", googleToken);
       }
 
-      if (window.google) {
-        window.google.accounts.id.initialize({
-          client_id: this.clientId,
-          callback: this.handleCredentialResponse.bind(this),
-        });
-        this.isInitialized = true;
-        resolve();
-      } else {
-        // Wait for Google script to load
-        const checkGoogle = () => {
-          if (window.google) {
-            window.google.accounts.id.initialize({
-              client_id: this.clientId,
-              callback: this.handleyResponse.bind(this),
-            });
-            this.isInitialized = true;
-            resolve();
-          } else {
-            setTimeout(checkGoogle, 100);
-          }
-        };
-        checkGoogle();
-      }
-    });
-  }
-
-  private async handleCredentialResponse(
-    response: GoogleAuthResponse,
-  ): Promise<void> {
-    try {
-      // 1. Decodificar JWT de Google (como ya lo haces)
-      const userInfo = this.decodeJWT(response.credential);
-      console.log("🔑 Google JWT decodificado:", userInfo);
-
-      // 2. ¡NUEVO! Enviar token al backend
-      const backendResponse = await this.sendTokenToBackend(
-        response.credential,
-      );
-
-      // 3. Guardar información
-      localStorage.setItem("googleUser", JSON.stringify(userInfo));
-      localStorage.setItem("googleToken", response.credential);
-      localStorage.setItem("appToken", backendResponse.access_token); // Tu JWT propio
-
-      // 4. Notificar a componentes
-      window.dispatchEvent(
-        new CustomEvent("googleAuthSuccess", {
-          detail: {
-            user: userInfo,
-            token: response.credential,
-            backendResponse: backendResponse,
-          },
-        }),
-      );
-    } catch (error) {
-      console.error("❌ Error en proceso de autenticación:", error);
-      // Manejar error - quizás mostrar mensaje al usuario
-    }
-  }
-
-  private decodeJWT(token: string): GoogleUser {
-    try {
-      const base64Url = token.split(".")[1];
-      const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-      const jsonPayload = decodeURIComponent(
-        atob(base64)
-          .split("")
-          .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-          .join(""),
-      );
-      return JSON.parse(jsonPayload);
-    } catch (error) {
-      console.error("Error decoding JWT:", error);
-      throw new Error("Failed to decode JWT token");
-    }
-  }
-
-  renderButton(elementId: string): void {
-    if (!this.isInitialized) {
-      console.error("Google Auth not initialized");
-      return;
+      // Limpiar la URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return token;
     }
 
-    window.google.accounts.id.renderButton(document.getElementById(elementId), {
-      theme: "outline",
-      size: "large",
-      type: "standard",
-      shape: "rectangular",
-      text: "signin_with",
-      logo_alignment: "left",
-    });
+    return null;
   }
 
-  signOut(): void {
-    localStorage.removeItem("googleUser");
-    localStorage.removeItem("googleToken");
-    window.dispatchEvent(new CustomEvent("googleAuthSignOut"));
-  }
+  async getUserInfo(token?: string): Promise<GoogleUser | null> {
+    const authToken = token || this.getCurrentToken();
 
-  getCurrentUser(): GoogleUser | null {
-    const userStr = localStorage.getItem("googleUser");
-    return userStr ? JSON.parse(userStr) : null;
-  }
+    if (!authToken) {
+      return null;
+    }
 
-  isSignedIn(): boolean {
-    return this.getCurrentUser() !== null;
-  }
-
-  async sendTokenToBackend(token: string): Promise<any> {
     try {
-      console.log("🚀 Enviando token al backend FastAPI...");
-
-      const response = await fetch("http://localhost:8000/auth/google", {
-        method: "POST",
+      const response = await fetch(`${this.baseUrl}/auth/me`, {
+        method: "GET",
         headers: {
+          Authorization: `Bearer ${authToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          token: token,
-        }),
       });
 
-      console.log("📡 Respuesta del backend:", response.status);
-
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error("❌ Error del backend:", errorData);
-        throw new Error(errorData.detail || "Error del servidor");
+        if (response.status === 401) {
+          this.signOut();
+        }
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
       }
 
       const data = await response.json();
-      console.log("✅ Login exitoso en backend:", data);
-
-      // Guardar el token JWT propio (no el de Google)
-      localStorage.setItem("appToken", data.access_token);
-
       return data;
     } catch (error) {
-      console.error("💥 Error enviando token al backend:", error);
+      console.error("Error obteniendo info del usuario:", error);
+      return null;
+    }
+  }
+
+  // 🆕 NUEVO MÉTODO - Obtener cursos de Google Classroom
+  async getGoogleClassrooms(): Promise<GoogleClassroom[]> {
+    const appToken = this.getCurrentToken();
+    const googleToken = this.getGoogleToken();
+
+    if (!appToken) {
+      throw new Error("No hay token de autenticación de la app");
+    }
+
+    if (!googleToken) {
+      throw new Error("No hay token de Google. Vuelve a iniciar sesión.");
+    }
+
+    try {
+      const response = await fetch(
+        `${this.baseUrl}/classrooms/google/courses`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${appToken}`,
+            google_access_token: googleToken,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Token expirado. Vuelve a iniciar sesión.");
+        }
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.classrooms || [];
+    } catch (error) {
+      console.error("Error obteniendo cursos de Google Classroom:", error);
       throw error;
     }
+  }
+
+  async determineUserRole(
+    userId: number,
+    googleAccessToken?: string,
+  ): Promise<any> {
+    const token = this.getCurrentToken();
+
+    if (!token) {
+      throw new Error("No hay token de autenticación");
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/auth/determine-role`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          usuario_id: userId,
+          google_access_token: googleAccessToken || null,
+        }),
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+      return null;
+    } catch (error) {
+      console.error("Error determinando rol del usuario:", error);
+      return null;
+    }
+  }
+
+  async testProtectedEndpoint(): Promise<any> {
+    const token = this.getCurrentToken();
+
+    if (!token) {
+      throw new Error("No hay token de autenticación");
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/auth/protected`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+      return null;
+    } catch (error) {
+      console.error("Error en endpoint protegido:", error);
+      return null;
+    }
+  }
+
+  // 🆕 MÉTODO ACTUALIZADO - Ahora limpia ambos tokens
+  signOut(): void {
+    localStorage.removeItem("appToken");
+    localStorage.removeItem("googleToken");
+    window.location.href = "/";
+  }
+
+  getCurrentToken(): string | null {
+    return localStorage.getItem("appToken");
+  }
+
+  // 🆕 NUEVO MÉTODO - Obtener el token de Google
+  getGoogleToken(): string | null {
+    return localStorage.getItem("googleToken");
+  }
+
+  isSignedIn(): boolean {
+    return this.getCurrentToken() !== null;
+  }
+
+  // 🆕 NUEVO MÉTODO - Verificar si tiene token de Google
+  hasGoogleToken(): boolean {
+    return this.getGoogleToken() !== null;
   }
 }
 
 // Export singleton instance
 export const googleAuth = new GoogleAuthService(
   "1065699173764-rne2gf7jkhld882fl3ag1248cdhf3sck.apps.googleusercontent.com",
+  "http://localhost:8000/auth/google/callback",
+  "http://localhost:8000",
 );
